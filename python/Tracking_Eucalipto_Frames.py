@@ -205,11 +205,11 @@ for i in range(n_frames):
     stem_msk = cv2.dilate(stem_msk, ini_kernel, iterations = 5)
 
     # Encontra os bbox das plantas com tubetes, que depois eh enconlhido para ficar soh a planta:
-    im_tmp, contours, hierarchy = cv2.findContours(plant_msk, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(plant_msk, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     new_plant_boxes = get_bboxes(contours, 5000, 500000, 10, 500)
 
     # Encontra os bbox dos tubetes, que depois sao movidos para a posicao do caule:
-    im_tmp, contours, hierarchy = cv2.findContours(stem_msk, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(stem_msk, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     new_stem_boxes = get_bboxes(contours, 100, 10000, 10, 500) 
 
     if new_plant_boxes.size > 0:
@@ -356,22 +356,9 @@ with open(json_file, 'w') as outfile:
     json.dump(video_history, outfile)
 
 time_taken = time.time() - start_time
-print('PreProc time: %.2f' % time_taken)  
+print('Total time: %.2f' % time_taken)  
 
 
-# In[58]:
-
-
-plt.imshow(pred)
-
-
-# In[59]:
-
-
-shutil.make_archive('../data/Plantass', 'zip', '../data/Plantass/')
-
-
-# In[ ]:
 
 
 
