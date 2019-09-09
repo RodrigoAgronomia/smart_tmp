@@ -62,7 +62,7 @@ def create_logger():
 # In[5]:
 
 
-base_dir = 'smart_tmp/data/'
+base_dir = 'data/'
 CONFIG = {"logging" : {"file_level" : 'DEBUG'}}
 logger = create_logger()
 
