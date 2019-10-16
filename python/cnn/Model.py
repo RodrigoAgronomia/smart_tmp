@@ -8,6 +8,8 @@ __author__ = "Sachin Mehta"
 __version__ = "1.0.1"
 __maintainer__ = "Sachin Mehta"
 
+config_inp_reinf = 3
+        
 class EESP(nn.Module):
     '''
     This class defines the EESP block, which is based on the following principle
@@ -179,8 +181,6 @@ class EESPNet(nn.Module):
 
         #print('Config: ', config)
 
-        global config_inp_reinf
-        config_inp_reinf = channels
         self.input_reinforcement = True
         assert len(K) == len(r_lim), 'Length of branching factor array and receptive field array should be the same.'
 
@@ -283,3 +283,174 @@ class EESPNet(nn.Module):
         return out_l1, out_l2, out_l3, out_l4
 
 
+class EESPNet_Reg(nn.Module):
+
+    def __init__(self, n_out = 1, s=1, channels = 3):
+
+        super().__init__()
+        reps = [0, 3, 5, 3]  # how many times EESP blocks should be repeated.
+        
+
+        r_lim = [13, 11, 9, 7, 5]  # receptive field at each spatial level
+        K = [2]*len(r_lim) # No. of parallel branches at different levels
+
+        base = 16 #base configuration
+        config_len = 5
+        config = [base] * config_len
+        base_s = 0
+        for i in range(config_len):
+            if i== 0:
+                base_s = int(base * s)
+                base_s = math.ceil(base_s / K[0]) * K[0]
+                config[i] = base if base_s > base else base_s
+            else:
+                config[i] = base_s * pow(2, i)
+        if s <= 1.5:
+            config.append(16)
+        elif s in [1.5, 2]:
+            config.append(16)
+        else:
+            ValueError('Configuration not supported')
+
+        #print('Config: ', config)
+
+        self.input_reinforcement = True
+        assert len(K) == len(r_lim), 'Length of branching factor array and receptive field array should be the same.'
+
+        self.level1 = CBR(channels, config[0], 3, 2)  # 112 L1
+
+        self.level2_0 = DownSampler(config[0], config[1], k=K[0], r_lim=r_lim[0], reinf=self.input_reinforcement)  # out = 56
+        self.level3_0 = DownSampler(config[1], config[2], k=K[1], r_lim=r_lim[1], reinf=self.input_reinforcement) # out = 28
+        self.level3 = nn.ModuleList()
+        for i in range(reps[1]):
+            self.level3.append(EESP(config[2], config[2], stride=1, k=K[2], r_lim=r_lim[2]))
+
+        self.level4_0 = DownSampler(config[2], config[3], k=K[2], r_lim=r_lim[2], reinf=self.input_reinforcement) #out = 14
+        self.level4 = nn.ModuleList()
+        for i in range(reps[2]):
+            self.level4.append(EESP(config[3], config[3], stride=1, k=K[3], r_lim=r_lim[3]))
+
+        self.level5_0 = DownSampler(config[3], config[4], k=K[3], r_lim=r_lim[3]) #7
+        self.level5 = nn.ModuleList()
+        for i in range(reps[3]):
+            self.level5.append(EESP(config[4], config[4], stride=1, k=K[4], r_lim=r_lim[4]))
+
+        # expand the feature maps using depth-wise separable convolution
+        self.level5.append(CBR(config[4], config[4], 3, 1, groups=config[4]))
+        self.level5.append(CBR(config[4], config[5], 1, 1, groups=K[4]))
+
+        self.pred = nn.Linear(config[5], n_out)
+        self.init_params()
+
+    def init_params(self):
+        '''
+        Function to initialze the parameters
+        '''
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+
+    def forward(self, input, p=0.2):
+        '''
+        :param input: Receives the input RGB image
+        :return: a C-dimensional vector, C=# of classes
+        '''
+        out_l1 = self.level1(input)  # 112
+
+        out_l2 = self.level2_0(out_l1, input)  # 56
+
+        out_l3_0 = self.level3_0(out_l2, input)  # out_l2_inp_rein
+        for i, layer in enumerate(self.level3):
+            if i == 0:
+                out_l3 = layer(out_l3_0)
+            else:
+                out_l3 = layer(out_l3)
+
+        out_l4_0 = self.level4_0(out_l3, input)  # down-sampled
+        for i, layer in enumerate(self.level4):
+            if i == 0:
+                out_l4 = layer(out_l4_0)
+            else:
+                out_l4 = layer(out_l4)
+
+        out_l5_0 = self.level5_0(out_l4)  # down-sampled
+        for i, layer in enumerate(self.level5):
+            if i == 0:
+                out_l5 = layer(out_l5_0)
+            else:
+                out_l5 = layer(out_l5)
+
+        output_g = F.adaptive_avg_pool2d(out_l5, output_size=1)
+        output_g = F.dropout(output_g, p=p, training=self.training)
+        output_1x1 = output_g.view(output_g.size(0), -1)
+        pred = self.pred(output_1x1)
+
+        return(pred, output_1x1)
+
+
+class EESPNet_Seg(nn.Module):
+    def __init__(self, classes=20, s=1, pretrained=None, gpus=1, channels=3):
+        super().__init__()
+        classificationNet = EESPNet(classes=1000, s=s, channels=channels)
+        if gpus >=1:
+            classificationNet = nn.DataParallel(classificationNet)
+        # load the pretrained weights
+        if pretrained:
+            if not os.path.isfile(pretrained):
+                print('Weight file does not exist. Training without pre-trained weights')
+            print('Model initialized with pretrained weights')
+            classificationNet.load_state_dict(torch.load(pretrained))
+
+        self.net = classificationNet.module
+
+        del classificationNet
+        # delete last few layers
+        del self.net.classifier
+        del self.net.level5
+        del self.net.level5_0
+        if s <=0.5:
+            p = 0.1
+        else:
+            p=0.2
+
+        self.proj_L4_C = CBR(self.net.level4[-1].module_act.num_parameters, self.net.level3[-1].module_act.num_parameters, 1, 1)
+        pspSize = 2*self.net.level3[-1].module_act.num_parameters
+        self.pspMod = nn.Sequential(EESP(pspSize, pspSize //2, stride=1, k=4, r_lim=7),
+                PSPModule(pspSize // 2, pspSize //2))
+        self.project_l3 = nn.Sequential(nn.Dropout2d(p=p), C(pspSize // 2, classes, 1, 1))
+        self.act_l3 = BR(classes)
+        self.project_l2 = CBR(self.net.level2_0.act.num_parameters + classes, classes, 1, 1)
+        self.project_l1 = nn.Sequential(nn.Dropout2d(p=p), C(self.net.level1.act.num_parameters + classes, classes, 1, 1))
+
+    def hierarchicalUpsample(self, x, factor=3):
+        for i in range(factor):
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+        return x
+
+
+    def forward(self, input):
+        out_l1, out_l2, out_l3, out_l4 = self.net(input, seg=True)
+        out_l4_proj = self.proj_L4_C(out_l4)
+        up_l4_to_l3 = F.interpolate(out_l4_proj, scale_factor=2, mode='bilinear', align_corners=True)
+        merged_l3_upl4 = self.pspMod(torch.cat([out_l3, up_l4_to_l3], 1))
+        proj_merge_l3_bef_act = self.project_l3(merged_l3_upl4)
+        proj_merge_l3 = self.act_l3(proj_merge_l3_bef_act)
+        out_up_l3 = F.interpolate(proj_merge_l3, scale_factor=2, mode='bilinear', align_corners=True)
+        merge_l2 = self.project_l2(torch.cat([out_l2, out_up_l3], 1))
+        out_up_l2 = F.interpolate(merge_l2, scale_factor=2, mode='bilinear', align_corners=True)
+        merge_l1 = self.project_l1(torch.cat([out_l1, out_up_l2], 1))
+        result = F.interpolate(merge_l1, scale_factor=2, mode='bilinear', align_corners=True)
+        
+        if self.training:
+            return result, self.hierarchicalUpsample(proj_merge_l3_bef_act)
+        else:
+            return result, out_l4
