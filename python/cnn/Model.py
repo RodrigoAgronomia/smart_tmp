@@ -454,3 +454,31 @@ class EESPNet_Seg(nn.Module):
             return result, self.hierarchicalUpsample(proj_merge_l3_bef_act)
         else:
             return result, out_l4
+        
+        
+        
+class PredModel(torch.nn.Module):
+    def __init__(self, pred_dim, n_out):
+        super(PredModel, self).__init__()
+        
+        # Prediciton layers
+        self.cnn_layers = []
+        for i in range(len(pred_dim) - 1):
+            cnn_layer = nn.Sequential(
+                nn.Conv1d(pred_dim[i][0], pred_dim[i + 1][0], 3),
+                nn.LeakyReLU(),
+                nn.Dropout(pred_dim[i + 1][1])
+            )
+            self.cnn_layers.append(cnn_layer)
+        self.cnn_layers.append(nn.AdaptiveMaxPool1d(1))
+        self.cnn_layers = nn.Sequential(*self.cnn_layers)
+        self.pred_layer = nn.Linear(pred_dim[-1][0], n_out[0])
+        self.pred_layerc = nn.Linear(pred_dim[-1][0], n_out[1])
+        
+
+    def forward(self, feats):
+        pred = self.cnn_layers(feats)
+        pred = pred.view(pred.shape[0], -1)
+        predf = self.pred_layer(pred)
+        predc = self.pred_layerc(pred)
+        return(predf, predc)
